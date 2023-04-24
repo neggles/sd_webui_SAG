@@ -1,29 +1,24 @@
+import math
+import os
 from inspect import isfunction
+
+import gradio as gr
 import torch
-from torch import nn, einsum
 import torch.nn.functional as F
 from einops import rearrange, repeat
-
-from modules.processing import StableDiffusionProcessing
-
-import math
-
+from torch import einsum, nn
 
 import modules.scripts as scripts
 from modules import shared
-import gradio as gr
-
+from modules.processing import StableDiffusionProcessing
 from modules.script_callbacks import (
-    on_cfg_denoiser,
-    CFGDenoiserParams,
-    CFGDenoisedParams,
-    on_cfg_denoised,
     AfterCFGCallbackParams,
+    CFGDenoisedParams,
+    CFGDenoiserParams,
     on_cfg_after_cfg,
+    on_cfg_denoised,
+    on_cfg_denoiser,
 )
-
-import os
-
 from scripts import xyz_grid_support_sag
 
 _ATTN_PRECISION = os.environ.get("ATTN_PRECISION", "fp32")

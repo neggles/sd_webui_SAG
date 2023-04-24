@@ -1,7 +1,7 @@
 import os
 import os.path
-import modules.scripts as scripts
 
+import modules.scripts as scripts
 
 xy_grid = None  # XY Grid module
 script_class = None  # additional_networks scripts.Script class
