@@ -1,4 +1,3 @@
-
 from inspect import isfunction
 import torch
 from torch import nn, einsum
@@ -10,42 +9,50 @@ from modules.processing import StableDiffusionProcessing
 import math
 
 
-
 import modules.scripts as scripts
 from modules import shared
 import gradio as gr
 
-from modules.script_callbacks import on_cfg_denoiser,CFGDenoiserParams, CFGDenoisedParams, on_cfg_denoised, AfterCFGCallbackParams, on_cfg_after_cfg
+from modules.script_callbacks import (
+    on_cfg_denoiser,
+    CFGDenoiserParams,
+    CFGDenoisedParams,
+    on_cfg_denoised,
+    AfterCFGCallbackParams,
+    on_cfg_after_cfg,
+)
 
 import os
 
 from scripts import xyz_grid_support_sag
 
 _ATTN_PRECISION = os.environ.get("ATTN_PRECISION", "fp32")
+
+
 def exists(val):
     return val is not None
+
+
 def default(val, d):
     if exists(val):
         return val
     return d() if isfunction(d) else d
 
+
 class LoggedSelfAttention(nn.Module):
-    def __init__(self, query_dim, context_dim=None, heads=8, dim_head=64, dropout=0.):
+    def __init__(self, query_dim, context_dim=None, heads=8, dim_head=64, dropout=0.0):
         super().__init__()
         inner_dim = dim_head * heads
         context_dim = default(context_dim, query_dim)
 
-        self.scale = dim_head ** -0.5
+        self.scale = dim_head**-0.5
         self.heads = heads
 
         self.to_q = nn.Linear(query_dim, inner_dim, bias=False)
         self.to_k = nn.Linear(context_dim, inner_dim, bias=False)
         self.to_v = nn.Linear(context_dim, inner_dim, bias=False)
 
-        self.to_out = nn.Sequential(
-            nn.Linear(inner_dim, query_dim),
-            nn.Dropout(dropout)
-        )
+        self.to_out = nn.Sequential(nn.Linear(inner_dim, query_dim), nn.Dropout(dropout))
         self.attn_probs = None
 
     def forward(self, x, context=None, mask=None):
@@ -56,22 +63,22 @@ class LoggedSelfAttention(nn.Module):
         k = self.to_k(context)
         v = self.to_v(context)
 
-        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> (b h) n d', h=h), (q, k, v))
+        q, k, v = map(lambda t: rearrange(t, "b n (h d) -> (b h) n d", h=h), (q, k, v))
 
         # force cast to fp32 to avoid overflowing
         if _ATTN_PRECISION == "fp32":
-            with torch.autocast(enabled=False, device_type='cuda'):
+            with torch.autocast(enabled=False, device_type="cuda"):
                 q, k = q.float(), k.float()
-                sim = einsum('b i d, b j d -> b i j', q, k) * self.scale
+                sim = einsum("b i d, b j d -> b i j", q, k) * self.scale
         else:
-            sim = einsum('b i d, b j d -> b i j', q, k) * self.scale
+            sim = einsum("b i d, b j d -> b i j", q, k) * self.scale
 
         del q, k
 
         if exists(mask):
-            mask = rearrange(mask, 'b ... -> b (...)')
+            mask = rearrange(mask, "b ... -> b (...)")
             max_neg_value = -torch.finfo(sim.dtype).max
-            mask = repeat(mask, 'b j -> (b h) () j', h=h)
+            mask = repeat(mask, "b j -> (b h) () j", h=h)
             sim.masked_fill_(~mask, max_neg_value)
 
         # attention, what we cannot get enough of
@@ -79,9 +86,10 @@ class LoggedSelfAttention(nn.Module):
 
         self.attn_probs = sim
 
-        out = einsum('b i j, b j d -> b i d', sim, v)
-        out = rearrange(out, '(b h) n d -> b n (h d)', h=h)
+        out = einsum("b i j, b j d -> b i d", sim, v)
+        out = rearrange(out, "(b h) n d -> b n (h d)", h=h)
         return self.to_out(out)
+
 
 def xattn_forward_log(self, x, context=None, mask=None):
     h = self.heads
@@ -91,22 +99,22 @@ def xattn_forward_log(self, x, context=None, mask=None):
     k = self.to_k(context)
     v = self.to_v(context)
 
-    q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> (b h) n d', h=h), (q, k, v))
+    q, k, v = map(lambda t: rearrange(t, "b n (h d) -> (b h) n d", h=h), (q, k, v))
 
     # force cast to fp32 to avoid overflowing
     if _ATTN_PRECISION == "fp32":
-        with torch.autocast(enabled=False, device_type='cuda'):
+        with torch.autocast(enabled=False, device_type="cuda"):
             q, k = q.float(), k.float()
-            sim = einsum('b i d, b j d -> b i j', q, k) * self.scale
+            sim = einsum("b i d, b j d -> b i j", q, k) * self.scale
     else:
-        sim = einsum('b i d, b j d -> b i j', q, k) * self.scale
+        sim = einsum("b i d, b j d -> b i j", q, k) * self.scale
 
     del q, k
 
     if exists(mask):
-        mask = rearrange(mask, 'b ... -> b (...)')
+        mask = rearrange(mask, "b ... -> b (...)")
         max_neg_value = -torch.finfo(sim.dtype).max
-        mask = repeat(mask, 'b j -> (b h) () j', h=h)
+        mask = repeat(mask, "b j -> (b h) () j", h=h)
         sim.masked_fill_(~mask, max_neg_value)
 
     # attention, what we cannot get enough of
@@ -116,12 +124,13 @@ def xattn_forward_log(self, x, context=None, mask=None):
     global current_selfattn_map
     current_selfattn_map = sim
 
-    out = einsum('b i j, b j d -> b i d', sim, v)
-    out = rearrange(out, '(b h) n d -> b n (h d)', h=h)
+    out = einsum("b i j, b j d -> b i d", sim, v)
+    out = rearrange(out, "(b h) n d -> b n (h d)", h=h)
     out = self.to_out(out)
     global current_outsize
     current_outsize = out.shape[-2:]
     return out
+
 
 saved_original_selfattn_forward = None
 current_selfattn_map = None
@@ -130,12 +139,13 @@ sag_enabled = False
 sag_mask_threshold = 1.0
 
 current_xin = None
-current_outsize = (64,64)
+current_outsize = (64, 64)
 current_batch_size = 1
-current_degraded_pred= None
+current_degraded_pred = None
 current_unet_kwargs = {}
 current_uncond_pred = None
 current_degraded_pred_compensation = None
+
 
 def gaussian_blur_2d(img, kernel_size, sigma):
     ksize_half = (kernel_size - 1) * 0.5
@@ -156,8 +166,9 @@ def gaussian_blur_2d(img, kernel_size, sigma):
     img = F.conv2d(img, kernel2d, groups=img.shape[-3])
 
     return img
-class Script(scripts.Script):
 
+
+class Script(scripts.Script):
     def __init__(self):
         pass
 
@@ -188,8 +199,6 @@ class Script(scripts.Script):
             "text_uncond": current_uncond_emb,
         }
 
-
-
     def denoised_callback(self, params: CFGDenoisedParams):
         if not sag_enabled:
             return
@@ -201,12 +210,12 @@ class Script(scripts.Script):
 
         # Produce attention mask
         # We're only interested in the last current_batch_size*head_count slices of logged self-attention map
-        attn_map = current_selfattn_map[-current_batch_size*8:]
+        attn_map = current_selfattn_map[-current_batch_size * 8 :]
         bh, hw1, hw2 = attn_map.shape
         b, latent_channel, latent_h, latent_w = original_latents.shape
-        h=8
+        h = 8
 
-        middle_layer_latent_size = [math.ceil(latent_h/8), math.ceil(latent_w/8)]
+        middle_layer_latent_size = [math.ceil(latent_h / 8), math.ceil(latent_w / 8)]
 
         attn_map = attn_map.reshape(b, h, hw1, hw2)
         attn_mask = attn_map.mean(1, keepdim=False).sum(1, keepdim=False) > sag_mask_threshold
@@ -230,8 +239,17 @@ class Script(scripts.Script):
         if shared.sd_model.model.conditioning_key == "crossattn-adm":
             make_condition_dict = lambda c_crossattn, c_adm: {"c_crossattn": c_crossattn, "c_adm": c_adm}
         else:
-            make_condition_dict = lambda c_crossattn, c_concat: {"c_crossattn": c_crossattn, "c_concat": [c_concat]}
-        degraded_pred = params.inner_model(renoised_degraded_latent, current_unet_kwargs['sigma'], cond=make_condition_dict([current_unet_kwargs['text_uncond']], [current_unet_kwargs['image_cond']]))
+            make_condition_dict = lambda c_crossattn, c_concat: {
+                "c_crossattn": c_crossattn,
+                "c_concat": [c_concat],
+            }
+        degraded_pred = params.inner_model(
+            renoised_degraded_latent,
+            current_unet_kwargs["sigma"],
+            cond=make_condition_dict(
+                [current_unet_kwargs["text_uncond"]], [current_unet_kwargs["image_cond"]]
+            ),
+        )
         global current_degraded_pred
         current_degraded_pred = degraded_pred
 
@@ -239,26 +257,25 @@ class Script(scripts.Script):
         if not sag_enabled:
             return
 
-        params.x = params.x + (current_uncond_pred - (current_degraded_pred + current_degraded_pred_compensation)) * float(current_sag_guidance_scale)
+        params.x = params.x + (
+            current_uncond_pred - (current_degraded_pred + current_degraded_pred_compensation)
+        ) * float(current_sag_guidance_scale)
         params.output_altered = True
 
-
-
     def ui(self, is_img2img):
-        with gr.Accordion('Self Attention Guidance', open=False):
+        with gr.Accordion("Self Attention Guidance", open=False):
             enabled = gr.Checkbox(label="Enabled", default=False)
-            scale = gr.Slider(label='Scale', minimum=-2.0, maximum=10.0, step=0.01, value=0.75)
-            mask_threshold = gr.Slider(label='SAG Mask Threshold', minimum=0.0, maximum=2.0, step=0.01, value=1.0)
+            scale = gr.Slider(label="Scale", minimum=-2.0, maximum=10.0, step=0.01, value=0.75)
+            mask_threshold = gr.Slider(
+                label="SAG Mask Threshold", minimum=0.0, maximum=2.0, step=0.01, value=1.0
+            )
 
         return [enabled, scale, mask_threshold]
-
-
 
     def process(self, p: StableDiffusionProcessing, *args, **kwargs):
         enabled, scale, mask_threshold = args
         global sag_enabled, sag_mask_threshold
         if enabled:
-
             sag_enabled = True
             sag_mask_threshold = mask_threshold
             global current_sag_guidance_scale
@@ -266,9 +283,13 @@ class Script(scripts.Script):
             global saved_original_selfattn_forward
             # replace target self attention module in unet with ours
 
-            org_attn_module = shared.sd_model.model.diffusion_model.middle_block._modules['1'].transformer_blocks._modules['0'].attn1
+            org_attn_module = (
+                shared.sd_model.model.diffusion_model.middle_block._modules["1"]
+                .transformer_blocks._modules["0"]
+                .attn1
+            )
             saved_original_selfattn_forward = org_attn_module.forward
-            org_attn_module.forward = xattn_forward_log.__get__(org_attn_module,org_attn_module.__class__)
+            org_attn_module.forward = xattn_forward_log.__get__(org_attn_module, org_attn_module.__class__)
 
             p.extra_generation_params["SAG Guidance Scale"] = scale
             p.extra_generation_params["SAG Mask Threshold"] = mask_threshold
@@ -276,16 +297,11 @@ class Script(scripts.Script):
         else:
             sag_enabled = False
 
-
-        if not hasattr(self, 'callbacks_added'):
+        if not hasattr(self, "callbacks_added"):
             on_cfg_denoiser(self.denoiser_callback)
             on_cfg_denoised(self.denoised_callback)
             on_cfg_after_cfg(self.cfg_after_cfg_callback)
             self.callbacks_added = True
-
-
-
-
 
         return
 
@@ -293,9 +309,13 @@ class Script(scripts.Script):
         enabled, scale, sag_mask_threshold = args
         if enabled:
             # restore original self attention module forward function
-            attn_module = shared.sd_model.model.diffusion_model.middle_block._modules['1'].transformer_blocks._modules[
-                '0'].attn1
+            attn_module = (
+                shared.sd_model.model.diffusion_model.middle_block._modules["1"]
+                .transformer_blocks._modules["0"]
+                .attn1
+            )
             attn_module.forward = saved_original_selfattn_forward
         return
+
 
 xyz_grid_support_sag.initialize(Script)
