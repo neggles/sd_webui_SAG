@@ -232,18 +232,19 @@ class Script(scripts.Script):
         global current_degraded_pred_compensation
         current_degraded_pred_compensation = uncond_output - degraded_latents
         if shared.sd_model.model.conditioning_key == "crossattn-adm":
-            make_condition_dict = lambda c_crossattn, c_adm: {"c_crossattn": c_crossattn, "c_adm": c_adm}
+            condition_dict = {
+                "c_crossattn": current_unet_kwargs["text_uncond"],
+                "c_adm": current_unet_kwargs["image_cond"],
+            }
         else:
-            make_condition_dict = lambda c_crossattn, c_concat: {
-                "c_crossattn": c_crossattn,
-                "c_concat": [c_concat],
+            condition_dict = {
+                "c_crossattn": current_unet_kwargs["text_uncond"],
+                "c_concat": [current_unet_kwargs["image_cond"]],
             }
         degraded_pred = params.inner_model(
             renoised_degraded_latent,
             current_unet_kwargs["sigma"],
-            cond=make_condition_dict(
-                [current_unet_kwargs["text_uncond"]], [current_unet_kwargs["image_cond"]]
-            ),
+            cond=condition_dict,
         )
         global current_degraded_pred
         current_degraded_pred = degraded_pred
